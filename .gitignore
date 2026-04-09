@@ -1,0 +1,15 @@
+__pycache__/
+*.pyc
+*.pyo
+*.db
+*.sqlite3
+.claude/
+data/protein_structures/*.pdb
+data/protein_structures/*.ent
+.streamlit/
+*.egg-info/
+dist/
+build/
+.env
+test_imports.py
+test_rdkit_imports.py
