@@ -194,7 +194,7 @@ def _load_protein_tab(db: DatabaseManager):
     st.subheader("Load Protein Structure")
 
     load_method = st.radio(
-        "Source", ["Search RCSB", "PDB ID", "Upload PDB File"], horizontal=True
+        "Source", ["Search RCSB", "PDB ID", "Upload PDB File", "From Database"], horizontal=True
     )
 
     data_dir = os.path.join(os.path.dirname(__file__), "..", "data", "protein_structures")
@@ -275,7 +275,7 @@ def _load_protein_tab(db: DatabaseManager):
             except Exception as e:
                 st.error(f"Failed to load PDB: {e}")
 
-    else:
+    elif load_method == "Upload PDB File":
         uploaded = st.file_uploader("Upload structure file", type=["pdb", "ent", "cif"])
         if uploaded is not None:
             try:
@@ -292,6 +292,36 @@ def _load_protein_tab(db: DatabaseManager):
                 st.error("BioPython is required.")
             except Exception as e:
                 st.error(f"Failed to parse structure file: {e}")
+
+    else:  # From Database
+        proteins = db.get_proteins(project_id=st.session_state.get("current_project_id"))
+        if proteins:
+            options = {
+                f"{p['pdb_id'] or p['name']} (ID:{p['id']})": p
+                for p in proteins
+            }
+            selected = st.selectbox("Select protein", list(options.keys()), key="db_protein_select")
+            if selected:
+                protein = options[selected]
+                st.text(f"PDB ID: {protein.get('pdb_id', 'N/A')}")
+                st.text(f"Name: {protein.get('name', 'N/A')}")
+                if protein.get("organism"):
+                    st.text(f"Organism: {protein['organism']}")
+                if protein.get("sequence"):
+                    st.text(f"Sequence length: {len(protein['sequence'])} residues")
+
+                if st.button("Load This Protein", key="load_db_protein_btn"):
+                    filepath = protein.get("structure_file_path")
+                    if filepath and os.path.exists(filepath):
+                        st.session_state["current_protein_id"] = protein["id"]
+                        st.session_state["current_pdb_file"] = filepath
+                        st.session_state["current_pdb_id"] = protein.get("pdb_id", "")
+                        st.success(f"Loaded {protein.get('pdb_id') or protein.get('name')}")
+                        st.rerun()
+                    else:
+                        st.warning("Structure file not found on disk. Re-download from RCSB or upload the file.")
+        else:
+            st.info("No proteins in database. Load one using Search RCSB, PDB ID, or Upload.")
 
     # Show saved proteins
     st.divider()
