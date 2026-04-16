@@ -428,8 +428,8 @@ def _visualization_tab(db: DatabaseManager):
         viewer.zoomTo()
         showmol(viewer, height=500, width=700)
 
-    except ImportError:
-        st.error("py3Dmol and stmol are required. Run: pip install py3Dmol stmol")
+    except ImportError as e:
+        st.error(f"Missing dependency: {e}. Run: pip install py3Dmol stmol ipython_genutils")
     except Exception as e:
         st.error(f"Visualization error: {e}")
 
