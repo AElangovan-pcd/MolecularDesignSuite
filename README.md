@@ -4,8 +4,16 @@ A comprehensive molecular design application for drug discovery research and dev
 
 ## Features
 
+### Structure Editor (Sidebar)
+- Built-in Ketcher molecular editor always available in the sidebar
+- Draw molecules visually with ChemDraw-style tools (atoms, bonds, rings, templates)
+- Real-time SMILES generation and molecular formula preview
+- "Use This Molecule" button pushes drawn structures into any active module
+- Bi-directional: load existing molecules back into the editor for modification via "Edit in Structure Editor" buttons throughout the app
+
 ### Molecular Input & Design
 - Enter molecules via SMILES strings with real-time validation
+- Draw molecules in the sidebar Structure Editor and push to input
 - Upload molecular files (SDF, MOL, SMILES, CSV formats)
 - Look up compounds from PubChem by name or CID
 - Batch processing for multiple molecules at once
@@ -18,7 +26,9 @@ A comprehensive molecular design application for drug discovery research and dev
 - Batch analysis with distribution plots and correlation heatmaps
 
 ### Protein Structure Analysis
-- Load protein structures from the RCSB PDB or local PDB files
+- **Search RCSB PDB** by keyword (protein name, organism, function) with results table showing title, organism, resolution, and method
+- Download structures in multiple formats: PDB, mmCIF, FASTA, Biological Assembly
+- Load protein structures by PDB ID or upload local PDB/CIF files
 - Protein sequence composition and physicochemical analysis
 - Interactive 3D visualization with customizable styles and color schemes
 - Binding site identification with residue contact analysis
@@ -78,7 +88,7 @@ conda activate moldesign
 ### Step 4: Install Additional Dependencies
 
 ```bash
-pip install streamlit plotly seaborn biopython py3Dmol stmol pubchempy chembl-webresource-client scikit-learn pillow
+pip install streamlit plotly seaborn biopython py3Dmol stmol pubchempy chembl-webresource-client scikit-learn pillow streamlit-ketcher
 ```
 
 ### Step 5: Run the Application
@@ -158,7 +168,8 @@ MolecularDesignSuite/
 ├── utils/
 │   ├── rdkit_utils.py              # RDKit utility functions
 │   ├── visualization.py            # Plotly chart utilities
-│   └── file_handlers.py            # File import/export handlers
+│   ├── file_handlers.py            # File import/export handlers
+│   └── editor_helpers.py           # Structure Editor integration helpers
 └── data/
     ├── reference_compounds/        # Reference molecule files
     └── protein_structures/         # Downloaded PDB files
@@ -170,7 +181,25 @@ MolecularDesignSuite/
 
 1. Launch the app and select a module from the sidebar
 2. Optionally create a **Project** to organize your work
-3. Start by adding molecules in the **Molecular Input & Design** module
+3. Use the **Structure Editor** in the sidebar to draw molecules visually, or enter SMILES directly in the **Molecular Input & Design** module
+
+### Example: Drawing and Analyzing a Molecule
+
+1. Use the **Structure Editor** in the sidebar to draw a molecule (or type a SMILES)
+2. Click **Use This Molecule** to push it into the active module
+3. In **Molecular Input & Design**, view the 2D structure and basic properties
+4. Save it to the database
+5. Switch to **Property Calculation** to see drug-likeness filters and ADMET estimates
+6. Use **Drug Optimization** > **Lead Profiling** for a comprehensive assessment
+7. Click **Edit in Structure Editor** on any molecule to modify it visually
+
+### Example: Searching for a Protein Structure
+
+1. Go to **Protein Analysis** > **Load Protein**
+2. Select **Search RCSB** and enter a keyword (e.g., "insulin receptor")
+3. Browse results and select an entry
+4. Choose a download format (PDB, mmCIF, FASTA, or Biological Assembly)
+5. Click **Download & Load** to fetch and parse the structure
 
 ### Example: Analyzing a Drug Molecule
 
@@ -199,11 +228,13 @@ MolecularDesignSuite/
 
 - **RDKit** - Cheminformatics toolkit
 - **Streamlit** - Web application framework
+- **Ketcher** (via streamlit-ketcher) - Visual molecular structure editor
 - **Plotly** - Interactive visualizations
 - **py3Dmol** - 3D molecular visualization
 - **BioPython** - Protein sequence and structure analysis
 - **scikit-learn** - Machine learning for QSAR
 - **PubChemPy** - PubChem API integration
+- **RCSB PDB API** - Protein structure search and download
 - **SQLite** - Local database storage
 
 ## License
