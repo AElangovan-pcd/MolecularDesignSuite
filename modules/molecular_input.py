@@ -14,6 +14,7 @@ from utils.file_handlers import (
     parse_sdf_file, parse_smiles_file, parse_csv_with_smiles,
 )
 from database.db_manager import DatabaseManager
+from utils.editor_helpers import edit_in_editor_button
 
 
 def render_molecular_input(db: DatabaseManager):
@@ -43,10 +44,12 @@ def _smiles_input_tab(db: DatabaseManager):
 
     col1, col2 = st.columns([2, 1])
     with col1:
+        default_smiles = st.session_state.pop("active_smiles", "") or ""
         smiles = st.text_input(
             "SMILES string",
+            value=default_smiles,
             placeholder="e.g., CC(=O)OC1=CC=CC=C1C(=O)O",
-            help="Enter a valid SMILES string for your molecule",
+            help="Enter a valid SMILES string or use the Structure Editor in the sidebar",
         )
         mol_name = st.text_input("Molecule name (optional)", placeholder="e.g., Aspirin")
 
@@ -60,6 +63,7 @@ def _smiles_input_tab(db: DatabaseManager):
                 st.success(message)
                 svg = mol_to_svg(mol, size=(350, 250))
                 st.image(svg, use_container_width=True)
+                edit_in_editor_button(smiles, key="edit_smiles_input")
 
             props = calculate_basic_properties(mol)
             st.subheader("Basic Properties")

@@ -13,6 +13,8 @@ from modules.property_calc import render_property_calculation
 from modules.protein_analysis import render_protein_analysis
 from modules.sar_analysis import render_sar_analysis
 from modules.drug_optimization import render_drug_optimization
+from streamlit_ketcher import st_ketcher
+from utils.rdkit_utils import validate_smiles, mol_from_smiles
 
 
 def init_session_state():
@@ -22,6 +24,8 @@ def init_session_state():
         "current_protein_id": None,
         "current_pdb_file": None,
         "current_pdb_id": None,
+        "editor_smiles": "",
+        "active_smiles": "",
     }
     for key, value in defaults.items():
         if key not in st.session_state:
@@ -88,6 +92,41 @@ def main():
             ],
             label_visibility="collapsed",
         )
+
+        st.divider()
+
+        # Structure Editor
+        st.markdown("### Structure Editor")
+        with st.expander("Draw Molecule", expanded=True):
+            editor_result = st_ketcher(
+                value=st.session_state.get("editor_smiles", ""),
+                height=400,
+                molecule_format="SMILES",
+                key="ketcher_editor",
+            )
+
+            # Update editor_smiles from Ketcher output
+            if editor_result is not None:
+                st.session_state["editor_smiles"] = editor_result
+
+            # Real-time SMILES preview
+            current_smiles = st.session_state.get("editor_smiles", "")
+            if current_smiles:
+                is_valid, _ = validate_smiles(current_smiles)
+                if is_valid:
+                    mol = mol_from_smiles(current_smiles)
+                    from rdkit.Chem import rdMolDescriptors
+                    formula = rdMolDescriptors.CalcMolFormula(mol)
+                    st.success(f"Molecule ready: {formula}")
+                    st.code(current_smiles, language=None)
+
+                    if st.button("Use This Molecule", key="use_molecule_btn", type="primary"):
+                        st.session_state["active_smiles"] = current_smiles
+                        st.rerun()
+                else:
+                    st.caption("Drawing incomplete...")
+            else:
+                st.caption("No structure drawn")
 
         st.divider()
 

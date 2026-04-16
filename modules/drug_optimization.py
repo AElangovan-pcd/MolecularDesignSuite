@@ -19,6 +19,7 @@ from utils.visualization import (
     scatter_plot, property_radar_chart,
 )
 from database.db_manager import DatabaseManager
+from utils.editor_helpers import edit_in_editor_button
 
 
 def render_drug_optimization(db: DatabaseManager):
@@ -65,6 +66,7 @@ def _lead_profiling_tab(db: DatabaseManager):
     with col1:
         svg = mol_to_svg(mol, size=(350, 250))
         st.image(svg, use_container_width=True)
+        edit_in_editor_button(smiles, key="lead_edit_btn")
 
     # Basic properties
     props = calculate_basic_properties(mol)
@@ -135,6 +137,7 @@ def _analog_generation_tab(db: DatabaseManager):
     with col1:
         svg = mol_to_svg(mol, size=(250, 180))
         st.image(svg, use_container_width=True)
+        edit_in_editor_button(smiles, key="analog_src_edit_btn")
 
     # Define simple transformations using SMIRKS patterns
     transformations = {

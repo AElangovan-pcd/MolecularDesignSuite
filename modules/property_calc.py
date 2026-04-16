@@ -15,6 +15,7 @@ from utils.visualization import (
     property_distribution_plot, correlation_heatmap,
 )
 from database.db_manager import DatabaseManager
+from utils.editor_helpers import edit_in_editor_button
 
 
 def render_property_calculation(db: DatabaseManager):
@@ -54,6 +55,8 @@ def _get_molecule_input(key_prefix: str = "prop") -> tuple:
             mol = mol_from_smiles(smiles)
             if mol is None:
                 st.error("Invalid SMILES")
+            else:
+                edit_in_editor_button(smiles, key=f"{key_prefix}_edit_btn")
     else:
         db = DatabaseManager()
         molecules = db.get_molecules(limit=200)
@@ -66,6 +69,8 @@ def _get_molecule_input(key_prefix: str = "prop") -> tuple:
                 mol_data = options[selected]
                 smiles = mol_data["smiles"]
                 mol = mol_from_smiles(smiles)
+                if mol:
+                    edit_in_editor_button(smiles, key=f"{key_prefix}_db_edit_btn")
         else:
             st.info("No molecules in database. Add some in the Molecular Input module.")
     return smiles, mol

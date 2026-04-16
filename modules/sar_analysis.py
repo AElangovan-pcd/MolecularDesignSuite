@@ -18,6 +18,7 @@ from utils.visualization import (
     similarity_heatmap, chemical_space_plot, mol_grid_image,
 )
 from database.db_manager import DatabaseManager
+from utils.editor_helpers import edit_in_editor_button
 
 
 def render_sar_analysis(db: DatabaseManager):
@@ -185,6 +186,7 @@ def _scaffold_tab(db: DatabaseManager):
             with col1:
                 svg = mol_to_svg(data["scaffold_mol"], size=(250, 180))
                 st.image(svg, use_container_width=True)
+                edit_in_editor_button(smi, key=f"scaffold_edit_{smi[:10]}")
             with col2:
                 st.markdown("**Member molecules:**")
                 for name in data["members"]:
