@@ -116,13 +116,35 @@ def main():
                 if is_valid:
                     mol = mol_from_smiles(current_smiles)
                     from rdkit.Chem import rdMolDescriptors
+                    from utils.rdkit_utils import canonical_smiles, calculate_basic_properties
                     formula = rdMolDescriptors.CalcMolFormula(mol)
                     st.success(f"Molecule ready: {formula}")
                     st.code(current_smiles, language=None)
 
-                    if st.button("Use This Molecule", key="use_molecule_btn", type="primary"):
-                        st.session_state["active_smiles"] = current_smiles
-                        st.rerun()
+                    btn_col1, btn_col2 = st.columns(2)
+                    with btn_col1:
+                        if st.button("Use This Molecule", key="use_molecule_btn", type="primary"):
+                            st.session_state["active_smiles"] = current_smiles
+                            st.rerun()
+                    with btn_col2:
+                        if st.button("Save to Database", key="save_editor_mol_btn"):
+                            canon = canonical_smiles(current_smiles)
+                            props = calculate_basic_properties(mol)
+                            mol_id = db.add_molecule(
+                                smiles=current_smiles,
+                                canonical_smiles=canon,
+                                name="",
+                                formula=props["formula"],
+                                mw=props["molecular_weight"],
+                                logp=props["logP"],
+                                tpsa=props["tpsa"],
+                                hbd=props["hbd"],
+                                hba=props["hba"],
+                                rotatable_bonds=props["rotatable_bonds"],
+                                aromatic_rings=props["aromatic_rings"],
+                                project_id=st.session_state.get("current_project_id"),
+                            )
+                            st.success(f"Saved (ID: {mol_id})")
                 else:
                     st.caption("Drawing incomplete...")
             else:
