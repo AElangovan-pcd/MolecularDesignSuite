@@ -4,6 +4,9 @@ import streamlit as st
 import pandas as pd
 import io
 import os
+import json
+import requests
+import gzip
 from typing import Optional
 
 from database.db_manager import DatabaseManager
@@ -31,94 +34,264 @@ def render_protein_analysis(db: DatabaseManager):
         _binding_site_tab(db)
 
 
+def _search_rcsb(query: str, max_results: int = 20) -> list[dict]:
+    """Search RCSB PDB by keyword. Returns list of dicts with entry metadata."""
+    search_url = "https://search.rcsb.org/rcsbsearch/v2/query"
+    payload = {
+        "query": {
+            "type": "terminal",
+            "service": "full_text",
+            "parameters": {"value": query},
+        },
+        "return_type": "entry",
+        "request_options": {
+            "paginate": {"start": 0, "rows": max_results},
+            "results_content_type": ["experimental"],
+            "sort": [{"sort_by": "score", "direction": "desc"}],
+        },
+    }
+    resp = requests.post(search_url, json=payload, timeout=15)
+    resp.raise_for_status()
+    data = resp.json()
+    pdb_ids = [hit["identifier"] for hit in data.get("result_set", [])]
+    if not pdb_ids:
+        return []
+
+    # Fetch metadata for each entry via GraphQL
+    graphql_url = "https://data.rcsb.org/graphql"
+    ids_str = ", ".join(f'"{pid}"' for pid in pdb_ids)
+    gql_query = f"""{{
+        entries(entry_ids: [{ids_str}]) {{
+            rcsb_id
+            struct {{ title }}
+            rcsb_entry_info {{
+                resolution_combined
+                experimental_method
+            }}
+            polymer_entities {{
+                rcsb_polymer_entity {{
+                    pdbx_description
+                }}
+                entity_src_gen {{
+                    pdbx_gene_src_scientific_name
+                }}
+            }}
+        }}
+    }}"""
+    meta_resp = requests.post(graphql_url, json={"query": gql_query}, timeout=15)
+    meta_resp.raise_for_status()
+    entries = meta_resp.json().get("data", {}).get("entries", [])
+
+    results = []
+    for entry in entries:
+        if entry is None:
+            continue
+        pdb_id = entry.get("rcsb_id", "")
+        title = (entry.get("struct") or {}).get("title", "")
+        info = entry.get("rcsb_entry_info") or {}
+        resolution = info.get("resolution_combined")
+        resolution_str = f"{resolution[0]:.2f}" if resolution else "N/A"
+        method = info.get("experimental_method", "N/A")
+
+        organism = "N/A"
+        polymers = entry.get("polymer_entities") or []
+        for poly in polymers:
+            src_list = poly.get("entity_src_gen") or []
+            for src in src_list:
+                name = src.get("pdbx_gene_src_scientific_name")
+                if name:
+                    organism = name
+                    break
+            if organism != "N/A":
+                break
+
+        results.append({
+            "PDB ID": pdb_id,
+            "Title": title[:80],
+            "Organism": organism,
+            "Resolution (\u00c5)": resolution_str,
+            "Method": method,
+        })
+    return results
+
+
+def _download_rcsb_file(pdb_id: str, file_format: str, data_dir: str) -> str:
+    """Download a structure file from RCSB. Returns the local file path."""
+    os.makedirs(data_dir, exist_ok=True)
+    pdb_id_lower = pdb_id.lower()
+
+    if file_format == "PDB":
+        url = f"https://files.rcsb.org/download/{pdb_id_lower}.pdb"
+        local_path = os.path.join(data_dir, f"{pdb_id_lower}.pdb")
+    elif file_format == "mmCIF":
+        url = f"https://files.rcsb.org/download/{pdb_id_lower}.cif"
+        local_path = os.path.join(data_dir, f"{pdb_id_lower}.cif")
+    elif file_format == "FASTA":
+        url = f"https://www.rcsb.org/fasta/entry/{pdb_id}"
+        local_path = os.path.join(data_dir, f"{pdb_id_lower}.fasta")
+    elif file_format == "Biological Assembly (PDB)":
+        url = f"https://files.rcsb.org/download/{pdb_id_lower}.pdb1.gz"
+        local_path = os.path.join(data_dir, f"{pdb_id_lower}_assembly1.pdb")
+    else:
+        raise ValueError(f"Unknown format: {file_format}")
+
+    resp = requests.get(url, timeout=30)
+    resp.raise_for_status()
+
+    if url.endswith(".gz"):
+        content = gzip.decompress(resp.content).decode("utf-8")
+    else:
+        content = resp.text
+
+    with open(local_path, "w") as f:
+        f.write(content)
+    return local_path
+
+
+def _parse_and_save_structure(db: DatabaseManager, pdb_id: str, filepath: str):
+    """Parse a PDB/CIF file, display info, and save to database."""
+    from Bio.PDB import PDBParser, MMCIFParser
+    from Bio.PDB.Polypeptide import PPBuilder
+
+    if filepath.endswith(".cif"):
+        parser = MMCIFParser(QUIET=True)
+    else:
+        parser = PDBParser(QUIET=True)
+
+    structure = parser.get_structure(pdb_id, filepath)
+    model = structure[0]
+    chains = list(model.get_chains())
+    residue_count = sum(1 for r in model.get_residues() if r.get_id()[0] == " ")
+    atom_count = sum(1 for _ in model.get_atoms())
+
+    st.success(f"Loaded {pdb_id}")
+    st.text(f"Chains: {len(chains)} ({', '.join(c.id for c in chains)})")
+    st.text(f"Residues: {residue_count}")
+    st.text(f"Atoms: {atom_count}")
+
+    # Extract sequence
+    ppb = PPBuilder()
+    sequences = []
+    for pp in ppb.build_peptides(structure):
+        sequences.append(str(pp.get_sequence()))
+    full_seq = "".join(sequences)
+
+    # Save to database
+    protein_id = db.add_protein(
+        pdb_id=pdb_id,
+        name=pdb_id,
+        sequence=full_seq,
+        structure_file_path=filepath,
+        project_id=st.session_state.get("current_project_id"),
+    )
+    st.session_state["current_protein_id"] = protein_id
+    st.session_state["current_pdb_file"] = filepath
+    st.session_state["current_pdb_id"] = pdb_id
+
+
 def _load_protein_tab(db: DatabaseManager):
-    """Load protein structure from PDB or file."""
+    """Load protein structure from RCSB search, PDB ID, or file upload."""
     st.subheader("Load Protein Structure")
 
-    load_method = st.radio("Source", ["PDB ID", "Upload PDB File"], horizontal=True)
+    load_method = st.radio(
+        "Source", ["Search RCSB", "PDB ID", "Upload PDB File"], horizontal=True
+    )
 
-    if load_method == "PDB ID":
+    data_dir = os.path.join(os.path.dirname(__file__), "..", "data", "protein_structures")
+
+    if load_method == "Search RCSB":
+        query = st.text_input(
+            "Search RCSB PDB",
+            placeholder="e.g., insulin receptor, EGFR kinase, hemoglobin",
+            help="Search by protein name, function, organism, or any keyword",
+        )
+        max_results = st.slider("Max results", 5, 50, 20, key="rcsb_max")
+
+        if query and st.button("Search", key="rcsb_search_btn"):
+            with st.spinner(f"Searching RCSB for '{query}'..."):
+                try:
+                    results = _search_rcsb(query, max_results)
+                    if results:
+                        st.session_state["rcsb_search_results"] = results
+                    else:
+                        st.warning("No results found. Try a different search term.")
+                        st.session_state.pop("rcsb_search_results", None)
+                except Exception as e:
+                    st.error(f"Search failed: {e}")
+
+        # Display search results
+        results = st.session_state.get("rcsb_search_results")
+        if results:
+            st.dataframe(pd.DataFrame(results), use_container_width=True, hide_index=True)
+
+            pdb_options = [r["PDB ID"] for r in results]
+            selected_pdb = st.selectbox("Select entry to download", pdb_options, key="rcsb_select")
+
+            file_format = st.selectbox(
+                "Download format",
+                ["PDB", "mmCIF", "FASTA", "Biological Assembly (PDB)"],
+                key="rcsb_format",
+            )
+
+            if st.button("Download & Load", key="rcsb_download_btn"):
+                with st.spinner(f"Downloading {selected_pdb} ({file_format})..."):
+                    try:
+                        filepath = _download_rcsb_file(selected_pdb, file_format, data_dir)
+
+                        if file_format == "FASTA":
+                            with open(filepath) as f:
+                                content = f.read()
+                            st.success(f"Downloaded FASTA for {selected_pdb}")
+                            st.code(content, language=None)
+                            st.download_button(
+                                "Save FASTA file",
+                                content,
+                                f"{selected_pdb}.fasta",
+                                key="fasta_dl",
+                            )
+                        else:
+                            _parse_and_save_structure(db, selected_pdb, filepath)
+                    except Exception as e:
+                        st.error(f"Download failed: {e}")
+
+    elif load_method == "PDB ID":
         pdb_id = st.text_input("PDB ID", placeholder="e.g., 1AKE").strip().upper()
 
-        if pdb_id and st.button("Fetch from PDB"):
+        file_format = st.selectbox(
+            "Download format",
+            ["PDB", "mmCIF", "Biological Assembly (PDB)"],
+            key="pdbid_format",
+        )
+
+        if pdb_id and st.button("Fetch from RCSB"):
             try:
-                from Bio.PDB import PDBList, PDBParser
-                with st.spinner(f"Downloading {pdb_id}..."):
-                    pdb_list = PDBList()
-                    data_dir = os.path.join(os.path.dirname(__file__), "..", "data", "protein_structures")
-                    os.makedirs(data_dir, exist_ok=True)
-                    filename = pdb_list.retrieve_pdb_file(pdb_id, pdir=data_dir, file_format="pdb")
-
-                    parser = PDBParser(QUIET=True)
-                    structure = parser.get_structure(pdb_id, filename)
-
-                    # Extract info
-                    model = structure[0]
-                    chains = list(model.get_chains())
-                    residue_count = sum(1 for r in model.get_residues()
-                                        if r.get_id()[0] == " ")
-                    atom_count = sum(1 for _ in model.get_atoms())
-
-                    st.success(f"Loaded {pdb_id}")
-                    st.text(f"Chains: {len(chains)} ({', '.join(c.id for c in chains)})")
-                    st.text(f"Residues: {residue_count}")
-                    st.text(f"Atoms: {atom_count}")
-
-                    # Extract sequence
-                    from Bio.PDB.Polypeptide import PPBuilder
-                    ppb = PPBuilder()
-                    sequences = []
-                    for pp in ppb.build_peptides(structure):
-                        sequences.append(str(pp.get_sequence()))
-                    full_seq = "".join(sequences)
-
-                    # Save to database
-                    protein_id = db.add_protein(
-                        pdb_id=pdb_id,
-                        name=pdb_id,
-                        sequence=full_seq,
-                        structure_file_path=filename,
-                        project_id=st.session_state.get("current_project_id"),
-                    )
-                    st.session_state["current_protein_id"] = protein_id
-                    st.session_state["current_pdb_file"] = filename
-                    st.session_state["current_pdb_id"] = pdb_id
-
+                with st.spinner(f"Downloading {pdb_id} ({file_format})..."):
+                    filepath = _download_rcsb_file(pdb_id, file_format, data_dir)
+                    _parse_and_save_structure(db, pdb_id, filepath)
+            except requests.HTTPError as e:
+                st.error(f"PDB ID not found or download failed: {e}")
             except ImportError:
                 st.error("BioPython is required. Run: pip install biopython")
             except Exception as e:
                 st.error(f"Failed to load PDB: {e}")
 
     else:
-        uploaded = st.file_uploader("Upload PDB file", type=["pdb", "ent"])
+        uploaded = st.file_uploader("Upload structure file", type=["pdb", "ent", "cif"])
         if uploaded is not None:
             try:
-                from Bio.PDB import PDBParser
-
                 content = uploaded.read().decode("utf-8")
-                # Save file locally
-                data_dir = os.path.join(os.path.dirname(__file__), "..", "data", "protein_structures")
                 os.makedirs(data_dir, exist_ok=True)
                 filepath = os.path.join(data_dir, uploaded.name)
                 with open(filepath, "w") as f:
                     f.write(content)
 
-                parser = PDBParser(QUIET=True)
-                structure = parser.get_structure("uploaded", filepath)
-                model = structure[0]
-                chains = list(model.get_chains())
-                residue_count = sum(1 for r in model.get_residues() if r.get_id()[0] == " ")
-
-                st.success(f"Loaded {uploaded.name}")
-                st.text(f"Chains: {len(chains)}")
-                st.text(f"Residues: {residue_count}")
-
-                st.session_state["current_pdb_file"] = filepath
+                pdb_id = uploaded.name.split(".")[0].upper()
+                _parse_and_save_structure(db, pdb_id, filepath)
 
             except ImportError:
                 st.error("BioPython is required.")
             except Exception as e:
-                st.error(f"Failed to parse PDB file: {e}")
+                st.error(f"Failed to parse structure file: {e}")
 
     # Show saved proteins
     st.divider()
