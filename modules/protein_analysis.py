@@ -409,11 +409,24 @@ def _visualization_tab(db: DatabaseManager):
 
         viewer = py3Dmol.view(width=700, height=500)
 
-        if pdb_id:
-            viewer.addModel(f"https://files.rcsb.org/download/{pdb_id}.pdb", "pdb")
-        elif pdb_file and os.path.exists(pdb_file):
+        pdb_data = None
+        fmt = "pdb"
+
+        if pdb_file and os.path.exists(pdb_file):
             with open(pdb_file) as f:
-                viewer.addModel(f.read(), "pdb")
+                pdb_data = f.read()
+            if pdb_file.endswith(".cif"):
+                fmt = "cif"
+        elif pdb_id:
+            resp = requests.get(f"https://files.rcsb.org/download/{pdb_id.lower()}.pdb", timeout=15)
+            if resp.ok:
+                pdb_data = resp.text
+
+        if not pdb_data:
+            st.warning("Could not load structure data. Make sure a protein is loaded or enter a valid PDB ID.")
+            return
+
+        viewer.addModel(pdb_data, fmt)
 
         if color_scheme == "spectrum":
             viewer.setStyle({style: {"color": "spectrum"}})
