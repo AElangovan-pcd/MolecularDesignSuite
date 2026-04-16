@@ -479,7 +479,7 @@ def _binding_site_tab(db: DatabaseManager):
 
                 contact_distance = st.slider(
                     f"Contact distance ({lig_name})", 3.0, 8.0, 4.5,
-                    key=f"dist_{lig_name}_{lig_id}",
+                    key=f"dist_{lig_name}_{lig_chain}_{lig_id}",
                 )
 
                 nearby_residues = set()
