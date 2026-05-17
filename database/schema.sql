@@ -88,9 +88,29 @@ CREATE TABLE IF NOT EXISTS sar_dataset_molecules (
     UNIQUE(dataset_id, molecule_id)
 );
 
+CREATE TABLE IF NOT EXISTS qsar_models (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL,
+    dataset_name TEXT,
+    n_molecules INTEGER NOT NULL,
+    activity_label TEXT NOT NULL,
+    activity_transform TEXT DEFAULT 'none',
+    higher_is_better INTEGER NOT NULL,
+    cv_r2_mean REAL,
+    cv_r2_std REAL,
+    model_type TEXT DEFAULT 'RandomForestRegressor',
+    artifact_path TEXT NOT NULL,
+    rdkit_version TEXT,
+    sklearn_version TEXT,
+    created_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    project_id INTEGER,
+    FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE SET NULL
+);
+
 -- Indexes for performance
 CREATE INDEX IF NOT EXISTS idx_molecules_project ON molecules(project_id);
 CREATE INDEX IF NOT EXISTS idx_molecules_smiles ON molecules(canonical_smiles);
 CREATE INDEX IF NOT EXISTS idx_properties_molecule ON molecular_properties(molecule_id);
 CREATE INDEX IF NOT EXISTS idx_experiments_molecule ON experiments(molecule_id);
 CREATE INDEX IF NOT EXISTS idx_experiments_protein ON experiments(protein_id);
+CREATE INDEX IF NOT EXISTS idx_qsar_models_project ON qsar_models(project_id);

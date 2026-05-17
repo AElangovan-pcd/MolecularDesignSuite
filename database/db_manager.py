@@ -5,6 +5,7 @@ import os
 from pathlib import Path
 from datetime import datetime
 from typing import Optional
+from pathlib import Path as _Path
 
 
 DB_DIR = Path(__file__).parent
@@ -314,3 +315,69 @@ class DatabaseManager:
             return [dict(r) for r in rows]
         finally:
             conn.close()
+
+    # ── QSAR Models ───────────────────────────────────────────
+
+    def add_qsar_model(self, meta: dict) -> int:
+        """Insert a qsar_models row from a metadata dict. Returns new id.
+
+        Expected keys: name, dataset_name, n_molecules, activity_label,
+        activity_transform, higher_is_better, cv_r2_mean, cv_r2_std,
+        model_type, artifact_path, rdkit_version, sklearn_version, project_id.
+        """
+        conn = self._get_connection()
+        try:
+            cur = conn.execute(
+                """INSERT INTO qsar_models
+                   (name, dataset_name, n_molecules, activity_label,
+                    activity_transform, higher_is_better, cv_r2_mean, cv_r2_std,
+                    model_type, artifact_path, rdkit_version, sklearn_version,
+                    project_id)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    meta["name"], meta.get("dataset_name"), meta["n_molecules"],
+                    meta["activity_label"], meta.get("activity_transform", "none"),
+                    int(meta["higher_is_better"]),
+                    meta.get("cv_r2_mean"), meta.get("cv_r2_std"),
+                    meta.get("model_type", "RandomForestRegressor"),
+                    meta["artifact_path"],
+                    meta.get("rdkit_version"), meta.get("sklearn_version"),
+                    meta.get("project_id"),
+                ),
+            )
+            conn.commit()
+            return cur.lastrowid
+        finally:
+            conn.close()
+
+    def get_qsar_models(self, project_id: Optional[int] = None) -> list[dict]:
+        conn = self._get_connection()
+        try:
+            if project_id is not None:
+                rows = conn.execute(
+                    "SELECT * FROM qsar_models WHERE project_id = ? ORDER BY created_date DESC",
+                    (project_id,),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    "SELECT * FROM qsar_models ORDER BY created_date DESC"
+                ).fetchall()
+            return [dict(r) for r in rows]
+        finally:
+            conn.close()
+
+    def delete_qsar_model(self, model_id: int) -> None:
+        """Delete the qsar_models row and unlink the artifact file.
+        Tolerant of a missing file so it's safe as a rollback path.
+        """
+        conn = self._get_connection()
+        try:
+            row = conn.execute(
+                "SELECT artifact_path FROM qsar_models WHERE id = ?", (model_id,)
+            ).fetchone()
+            conn.execute("DELETE FROM qsar_models WHERE id = ?", (model_id,))
+            conn.commit()
+        finally:
+            conn.close()
+        if row is not None and row["artifact_path"]:
+            _Path(row["artifact_path"]).unlink(missing_ok=True)
