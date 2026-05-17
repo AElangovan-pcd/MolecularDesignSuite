@@ -13,3 +13,4 @@ build/
 .env
 test_imports.py
 test_rdkit_imports.py
+data/qsar_models/*.joblib

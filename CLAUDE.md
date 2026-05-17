@@ -24,7 +24,7 @@ Launch:
 - **Windows preferred**: double-click or run `run.bat` from Command Prompt — it prepends `<env>`, `<env>\Library\bin`, and `<env>\Library\mingw-w64\bin` to PATH so RDKit's DLLs load, then `python -m streamlit run app.py`. If you ever move the conda env, edit the `CONDA_ENV` line at the top of `run.bat`.
 - **Manual**: `conda activate moldesign && streamlit run app.py --server.port 8501 --server.headless true`. App is at <http://localhost:8501>.
 
-There is no lint, type-check, or formatter configured. There is no real test suite — `test_imports.py` and `test_rdkit_imports.py` are smoke scripts that print `[OK]/[FAIL]` per import (`python test_imports.py`). Both are gitignored.
+There is no lint, type-check, or formatter configured. The pytest suite lives in `tests/` — run with `pytest` from the repo root (config is in `pyproject.toml`). One-time setup in the conda env: `pip install pytest`. `test_imports.py` and `test_rdkit_imports.py` at the repo root remain as smoke scripts (and are gitignored), unrelated to the pytest suite.
 
 ## Architecture
 
@@ -51,6 +51,8 @@ When wiring a new module that should accept molecules from the editor, read `act
 `synthetic_accessibility_score()` opportunistically loads `sascorer.py` from `rdkit.Chem.RDConfig.RDContribDir/SA_Score`; if the contrib dir isn't shipped with the conda build, it falls back to `_estimate_sa_score` (a basic heuristic). Don't replace the fallback without checking that the contrib package is reliably present.
 
 Visualization helpers (`utils/visualization.py`), file parsers (`utils/file_handlers.py`), and editor helpers (`utils/editor_helpers.py`) sit alongside but never import each other — they fan out from `rdkit_utils`.
+
+**`utils/qsar.py`** is the second cheminformatics-adjacent module — and the only file that should import `joblib` or call `sklearn.*` for model persistence. It owns `train_qsar`, `save_model_artifact`, `load_model_artifact`, and `predict`. `modules/sar_analysis.py` and `modules/drug_optimization.py` consume it; neither imports joblib directly.
 
 ### Data layer
 `database/db_manager.py` wraps a single SQLite file at `database/molecular_design.db`. `DatabaseManager.__init__` runs `schema.sql` via `executescript` on every construction, so the schema file (`database/schema.sql`) is authoritative — edit the schema there, not via ad-hoc `ALTER TABLE`s in code. Foreign keys are on; `molecules.smiles` is `UNIQUE`, and `add_molecule()` uses `INSERT OR IGNORE` then looks up the existing row to return its id — so the function never raises on duplicates, it returns the pre-existing id. Callers depend on that. The DB file is gitignored.
