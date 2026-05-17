@@ -28,9 +28,10 @@ def render_sar_analysis(db: DatabaseManager):
     """Render the SAR Analysis module."""
     st.header("Structure-Activity Relationship Analysis")
 
-    tab1, tab2, tab3, tab4, tab5 = st.tabs([
+    tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
         "Molecular Descriptors", "Similarity Analysis",
-        "Scaffold Analysis", "Chemical Space", "QSAR Modeling"
+        "Scaffold Analysis", "Chemical Space",
+        "QSAR Modeling", "QSAR Predict",
     ])
 
     with tab1:
@@ -47,6 +48,9 @@ def render_sar_analysis(db: DatabaseManager):
 
     with tab5:
         _qsar_tab(db)
+
+    with tab6:
+        _predict_tab(db)
 
 
 def _load_molecules(db: DatabaseManager, key_prefix: str) -> list[dict]:
@@ -374,3 +378,100 @@ def _qsar_tab(db: DatabaseManager):
             st.success(f"Saved as model #{model_id}: {meta['name']}")
         except Exception as e:
             st.error(f"Failed to save model: {e}")
+
+
+def _predict_tab(db: DatabaseManager):
+    """Predict activity using a saved QSAR model."""
+    st.subheader("QSAR Predict")
+    st.caption("Pick a saved model and score new SMILES.")
+
+    project_id = st.session_state.get("current_project_id")
+    models = db.get_qsar_models(project_id=project_id)
+    if not models:
+        st.info(
+            "No saved QSAR models for this project. "
+            "Train one in the 'QSAR Modeling' tab and click 'Save Model'."
+        )
+        return
+
+    def _label(m: dict) -> str:
+        r2 = m.get("cv_r2_mean")
+        r2_str = f"R²={r2:.2f}" if r2 is not None else "R²=n/a"
+        return f"#{m['id']} {m['name']} ({r2_str}, {m['created_date']})"
+
+    options = {_label(m): m for m in models}
+    chosen_label = st.selectbox("Saved model", list(options.keys()), key="predict_model_select")
+    chosen = options[chosen_label]
+
+    meta_col1, meta_col2, meta_col3 = st.columns(3)
+    with meta_col1:
+        st.metric("Activity label", chosen["activity_label"])
+    with meta_col2:
+        st.metric("Higher is better", "Yes" if chosen["higher_is_better"] else "No")
+    with meta_col3:
+        st.metric("Training n", chosen["n_molecules"])
+    if chosen.get("activity_transform") and chosen["activity_transform"] != "none":
+        st.caption(f"Predictions are in *{chosen['activity_transform']}-transformed* space.")
+
+    source = st.radio("Input", ["Paste SMILES", "From Database"], horizontal=True, key="predict_source")
+    smiles_list: list[str] = []
+    if source == "Paste SMILES":
+        text = st.text_area(
+            "SMILES (one per line)",
+            height=150,
+            key="predict_text",
+            placeholder="CCO\nc1ccccc1\nCC(=O)O",
+        )
+        if text:
+            smiles_list = [line.strip() for line in text.strip().split("\n") if line.strip()]
+    else:
+        db_mols = db.get_molecules(project_id=project_id, limit=500)
+        if not db_mols:
+            st.info("No molecules in the database for this project.")
+            return
+        labels = {f"{m['name'] or m['canonical_smiles'][:25]} (#{m['id']})": m["smiles"] for m in db_mols}
+        chosen_dbs = st.multiselect("Molecules", list(labels.keys()), key="predict_db_select")
+        smiles_list = [labels[c] for c in chosen_dbs]
+
+    if not smiles_list:
+        return
+
+    if not st.button("Predict", key="predict_btn", type="primary"):
+        return
+
+    try:
+        artifact = load_model_artifact(chosen["id"], db)
+    except FileNotFoundError:
+        st.error(
+            "Model artifact missing on disk. "
+            "Delete this row from Data Management → QSAR Models, then re-train."
+        )
+        return
+
+    # Version skew warning, non-blocking
+    import rdkit, sklearn
+    if chosen.get("rdkit_version") and chosen["rdkit_version"] != rdkit.__version__:
+        st.warning(
+            f"Model was trained with RDKit {chosen['rdkit_version']}, "
+            f"current is {rdkit.__version__}. Predictions may differ slightly."
+        )
+    if chosen.get("sklearn_version") and chosen["sklearn_version"] != sklearn.__version__:
+        st.warning(
+            f"Model was trained with scikit-learn {chosen['sklearn_version']}, "
+            f"current is {sklearn.__version__}. Predictions may differ slightly."
+        )
+
+    results = predict(artifact, smiles_list)
+    pred_col_label = f"Predicted {chosen['activity_label']}"
+    results_df = pd.DataFrame([
+        {
+            "SMILES": r["smiles"],
+            pred_col_label: r["predicted_value"],
+            "in_training?": "yes ⚠" if r["in_training"] else "no",
+            "error": r["error"] or "",
+        }
+        for r in results
+    ])
+    st.dataframe(results_df, use_container_width=True, hide_index=True)
+    csv = results_df.to_csv(index=False)
+    st.download_button("Download Predictions CSV", csv, "predictions.csv", "text/csv")
