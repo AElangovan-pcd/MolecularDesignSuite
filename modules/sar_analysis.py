@@ -295,22 +295,28 @@ def _qsar_tab(db: DatabaseManager):
         help="'pIC50' computes -log10(IC50 in molar units). 'log10' computes log10(value). 'none' uses values as-is.",
     )
 
-    if not st.button("Build QSAR Model", key="qsar_build_btn"):
+    if st.button("Build QSAR Model", key="qsar_build_btn"):
+        try:
+            artifact, metrics = train_qsar(df, smiles_col, activity_col, activity_transform=transform)
+        except ValueError as e:
+            st.error(str(e))
+            return
+        except Exception as e:
+            st.error(f"Training failed: {e}")
+            return
+        st.session_state["qsar_last_artifact"] = artifact
+        st.session_state["qsar_last_metrics"] = metrics
+        st.session_state["qsar_last_dataset_name"] = uploaded.name
+        st.session_state["qsar_last_transform"] = transform
+
+    # Render metrics + save section whenever a trained artifact lives in
+    # session_state. Gating on the Build button alone makes the Save click
+    # a no-op (the rerun triggered by Save would early-return).
+    if "qsar_last_artifact" not in st.session_state:
         return
 
-    try:
-        artifact, metrics = train_qsar(df, smiles_col, activity_col, activity_transform=transform)
-    except ValueError as e:
-        st.error(str(e))
-        return
-    except Exception as e:
-        st.error(f"Training failed: {e}")
-        return
-
-    st.session_state["qsar_last_artifact"] = artifact
-    st.session_state["qsar_last_metrics"] = metrics
-    st.session_state["qsar_last_dataset_name"] = uploaded.name
-    st.session_state["qsar_last_transform"] = transform
+    artifact = st.session_state["qsar_last_artifact"]
+    metrics = st.session_state["qsar_last_metrics"]
 
     st.markdown("#### Model Performance (5-fold CV)")
     st.metric("Mean R\u00b2", f"{metrics['cv_r2_mean']:.3f} \u00b1 {metrics['cv_r2_std']:.3f}")
