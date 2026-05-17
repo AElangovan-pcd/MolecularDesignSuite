@@ -183,7 +183,7 @@ def render_data_management(db: DatabaseManager):
     """Data management module for viewing and managing stored data."""
     st.header("Data Management")
 
-    tab1, tab2, tab3 = st.tabs(["Molecules", "Proteins", "Experiments"])
+    tab1, tab2, tab3, tab4 = st.tabs(["Molecules", "Proteins", "Experiments", "QSAR Models"])
 
     with tab1:
         st.subheader("Stored Molecules")
@@ -275,6 +275,30 @@ def render_data_management(db: DatabaseManager):
                 )
                 st.success("Experiment saved!")
                 st.rerun()
+
+    with tab4:
+        st.subheader("Saved QSAR Models")
+        project_id = st.session_state.get("current_project_id")
+        models = db.get_qsar_models(project_id=project_id)
+        if models:
+            import pandas as pd
+            df = pd.DataFrame(models)
+            display_cols = [
+                "id", "name", "activity_label", "activity_transform",
+                "higher_is_better", "cv_r2_mean", "n_molecules",
+                "rdkit_version", "sklearn_version", "created_date",
+            ]
+            available_cols = [c for c in display_cols if c in df.columns]
+            st.dataframe(df[available_cols], use_container_width=True, hide_index=True)
+
+            model_ids = df["id"].tolist()
+            del_id = st.selectbox("Select model id to delete", model_ids, key="del_qsar_model")
+            if st.button("Delete Selected Model", key="del_qsar_model_btn"):
+                db.delete_qsar_model(del_id)
+                st.success(f"Deleted model id {del_id}")
+                st.rerun()
+        else:
+            st.info("No saved QSAR models for this project.")
 
 
 if __name__ == "__main__":
