@@ -5,7 +5,7 @@ import pandas as pd
 import pytest
 
 from utils.qsar import (
-    ModelArtifact, train_qsar,
+    ModelArtifact, train_qsar, predict,
 )
 from utils.qsar import save_model_artifact, load_model_artifact
 
@@ -193,3 +193,36 @@ def test_load_missing_artifact_file_raises(tmp_db, tmp_path, sample_dataset_df):
 
     with pytest.raises(FileNotFoundError):
         load_model_artifact(model_id, tmp_db, models_dir=tmp_path)
+
+
+def test_predict_valid_smiles_returns_floats(sample_dataset_df):
+    artifact, _ = train_qsar(sample_dataset_df, "SMILES", "Activity")
+    results = predict(artifact, ["CCO", "CCCO"])
+    assert len(results) == 2
+    for r in results:
+        assert isinstance(r["predicted_value"], float)
+        assert r["error"] is None
+        assert "smiles" in r
+        assert "in_training" in r
+
+
+def test_predict_invalid_smiles_returns_none_and_error(sample_dataset_df):
+    artifact, _ = train_qsar(sample_dataset_df, "SMILES", "Activity")
+    results = predict(artifact, ["CCO", "not-a-smiles", "CCCO"])
+    assert results[0]["predicted_value"] is not None
+    assert results[1]["predicted_value"] is None
+    assert "Invalid SMILES" in results[1]["error"]
+    assert results[2]["predicted_value"] is not None
+
+
+def test_predict_flags_training_set_members(sample_dataset_df):
+    artifact, _ = train_qsar(sample_dataset_df, "SMILES", "Activity")
+    # "CCO" is in sample_dataset_df, "CCCCCCCCO" (octanol) is not.
+    results = predict(artifact, ["CCO", "CCCCCCCCO"])
+    assert results[0]["in_training"] is True
+    assert results[1]["in_training"] is False
+
+
+def test_predict_empty_list_returns_empty(sample_dataset_df):
+    artifact, _ = train_qsar(sample_dataset_df, "SMILES", "Activity")
+    assert predict(artifact, []) == []

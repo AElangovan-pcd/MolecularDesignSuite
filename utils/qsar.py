@@ -214,3 +214,36 @@ def load_model_artifact(
             f"QSAR model artifact missing on disk: {artifact_path}"
         )
     return joblib.load(artifact_path)
+
+
+def predict(artifact: ModelArtifact, smiles_list: list[str]) -> list[dict]:
+    """Predict activity for each SMILES. Never raises on per-row errors.
+
+    Returns list of dicts: {smiles, predicted_value, in_training, error}.
+    `predicted_value` is a float for valid SMILES, None for invalid.
+    `in_training` flags whether the canonical SMILES was in the training set.
+    """
+    results: list[dict] = []
+    for smi in smiles_list:
+        row: dict = {
+            "smiles": smi,
+            "predicted_value": None,
+            "in_training": False,
+            "error": None,
+        }
+        mol = mol_from_smiles(smi)
+        if mol is None:
+            row["error"] = "Invalid SMILES"
+            results.append(row)
+            continue
+        try:
+            desc = calculate_descriptor_set(mol)
+            desc_df = pd.DataFrame([desc])[artifact.feature_columns]
+            X = artifact.scaler.transform(desc_df.values)
+            pred = float(artifact.model.predict(X)[0])
+            row["predicted_value"] = pred
+            row["in_training"] = _hash_smiles(smi) in artifact.training_smiles_hashes
+        except Exception as e:
+            row["error"] = f"Prediction failed: {e}"
+        results.append(row)
+    return results
