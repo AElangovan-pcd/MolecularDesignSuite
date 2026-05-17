@@ -18,6 +18,9 @@ from utils.visualization import (
     similarity_heatmap, chemical_space_plot, mol_grid_image,
 )
 from database.db_manager import DatabaseManager
+from utils.qsar import (
+    train_qsar, save_model_artifact, load_model_artifact, predict, VALID_TRANSFORMS,
+)
 from utils.editor_helpers import edit_in_editor_button
 
 
@@ -246,16 +249,15 @@ def _chemical_space_tab(db: DatabaseManager):
 
 
 def _qsar_tab(db: DatabaseManager):
-    """Simple QSAR model building."""
+    """Simple QSAR model building with persistence."""
     st.subheader("QSAR Modeling")
-    st.caption("Build a simple QSAR model from molecular descriptors and activity data.")
+    st.caption("Build a QSAR model from molecular descriptors and activity data, then save it for later prediction.")
 
     st.markdown("#### Input Data")
     st.markdown("Upload a CSV with columns: `SMILES`, `Activity`")
 
     uploaded = st.file_uploader("Upload CSV", type=["csv"], key="qsar_csv")
     if uploaded is None:
-        # Show example format
         st.code("SMILES,Activity\nCCO,3.5\nc1ccccc1,5.2\nCC(=O)O,2.1", language="csv")
         return
 
@@ -272,64 +274,103 @@ def _qsar_tab(db: DatabaseManager):
             smiles_col = col
         if col.lower() in ("activity", "pic50", "ic50", "ec50", "potency", "value"):
             activity_col = col
-
     if smiles_col is None:
-        smiles_col = st.selectbox("SMILES column", df.columns.tolist())
+        smiles_col = st.selectbox("SMILES column", df.columns.tolist(), key="qsar_smiles_col")
     if activity_col is None:
-        activity_col = st.selectbox("Activity column",
-                                     [c for c in df.columns if c != smiles_col])
+        activity_col = st.selectbox(
+            "Activity column",
+            [c for c in df.columns if c != smiles_col],
+            key="qsar_activity_col",
+        )
 
-    if not st.button("Build QSAR Model"):
+    transform = st.radio(
+        "Activity transform (applied to the activity column before training)",
+        VALID_TRANSFORMS,
+        horizontal=True,
+        key="qsar_transform",
+        help="'pIC50' computes -log10(IC50 in molar units). 'log10' computes log10(value). 'none' uses values as-is.",
+    )
+
+    if not st.button("Build QSAR Model", key="qsar_build_btn"):
         return
 
-    # Calculate descriptors
-    valid_rows = []
-    for _, row in df.iterrows():
-        mol = mol_from_smiles(str(row[smiles_col]))
-        if mol is not None:
-            desc = calculate_descriptor_set(mol)
-            desc["Activity"] = float(row[activity_col])
-            valid_rows.append(desc)
-
-    if len(valid_rows) < 10:
-        st.warning(f"Only {len(valid_rows)} valid molecules. Need at least 10 for modeling.")
+    try:
+        artifact, metrics = train_qsar(df, smiles_col, activity_col, activity_transform=transform)
+    except ValueError as e:
+        st.error(str(e))
+        return
+    except Exception as e:
+        st.error(f"Training failed: {e}")
         return
 
-    desc_df = pd.DataFrame(valid_rows)
-    feature_cols = [c for c in desc_df.columns if c != "Activity"]
-    X = desc_df[feature_cols].values
-    y = desc_df["Activity"].values
-
-    # Train/test split and Random Forest
-    from sklearn.model_selection import cross_val_score
-    from sklearn.ensemble import RandomForestRegressor
-    from sklearn.preprocessing import StandardScaler
-
-    scaler = StandardScaler()
-    X_scaled = scaler.fit_transform(X)
-
-    model = RandomForestRegressor(n_estimators=100, random_state=42, n_jobs=-1)
-    scores = cross_val_score(model, X_scaled, y, cv=5, scoring="r2")
+    st.session_state["qsar_last_artifact"] = artifact
+    st.session_state["qsar_last_metrics"] = metrics
+    st.session_state["qsar_last_dataset_name"] = uploaded.name
+    st.session_state["qsar_last_transform"] = transform
 
     st.markdown("#### Model Performance (5-fold CV)")
-    st.metric("Mean R\u00b2", f"{scores.mean():.3f} \u00b1 {scores.std():.3f}")
+    st.metric("Mean R\u00b2", f"{metrics['cv_r2_mean']:.3f} \u00b1 {metrics['cv_r2_std']:.3f}")
+    st.caption(f"Trained on {metrics['n_molecules']} valid molecules")
 
-    # Feature importance
-    model.fit(X_scaled, y)
     importances = pd.DataFrame({
-        "Feature": feature_cols,
-        "Importance": model.feature_importances_,
+        "Feature": artifact.feature_columns,
+        "Importance": artifact.model.feature_importances_,
     }).sort_values("Importance", ascending=False)
-
     st.markdown("#### Top Feature Importances")
     st.dataframe(importances.head(10), hide_index=True, use_container_width=True)
 
-    # Predicted vs actual
-    from sklearn.model_selection import cross_val_predict
-    y_pred = cross_val_predict(model, X_scaled, y, cv=5)
-    pred_df = pd.DataFrame({"Actual": y, "Predicted": y_pred})
+    # Predicted vs actual comes from cross_val_predict run inside train_qsar.
+    pred_df = pd.DataFrame({
+        "Actual": metrics["cv_y_actual"],
+        "Predicted": metrics["cv_y_predicted"],
+    })
     st.plotly_chart(
-        scatter_plot(pred_df, "Actual", "Predicted",
-                     title="Predicted vs Actual Activity"),
+        scatter_plot(pred_df, "Actual", "Predicted", title="Predicted vs Actual Activity"),
         use_container_width=True,
     )
+
+    # \u2500\u2500 Save Model \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+    st.divider()
+    st.markdown("#### Save This Model")
+
+    default_name = uploaded.name.rsplit(".", 1)[0] + "-RF"
+    save_col1, save_col2 = st.columns(2)
+    with save_col1:
+        save_name = st.text_input("Model name", value=default_name, key="qsar_save_name")
+        save_activity_label = st.text_input(
+            "Activity label (required)",
+            placeholder="e.g., pIC50, log(EC50) [nM], % inhibition",
+            key="qsar_save_label",
+        )
+    with save_col2:
+        higher_is_better = st.checkbox(
+            "Higher activity = better potency?",
+            value=True,
+            key="qsar_save_higher_better",
+            help="Used by Drug Optimization MPO to know whether to maximize or minimize predictions.",
+        )
+
+    if st.button("Save Model", key="qsar_save_btn", type="primary"):
+        if not save_activity_label.strip():
+            st.error("Activity label is required.")
+            return
+        if "qsar_last_artifact" not in st.session_state:
+            st.error("Train a model first.")
+            return
+        meta = {
+            "name": save_name.strip() or default_name,
+            "dataset_name": st.session_state["qsar_last_dataset_name"],
+            "activity_label": save_activity_label.strip(),
+            "activity_transform": st.session_state["qsar_last_transform"],
+            "higher_is_better": 1 if higher_is_better else 0,
+            "cv_r2_mean": st.session_state["qsar_last_metrics"]["cv_r2_mean"],
+            "cv_r2_std": st.session_state["qsar_last_metrics"]["cv_r2_std"],
+            "project_id": st.session_state.get("current_project_id"),
+        }
+        try:
+            model_id = save_model_artifact(
+                st.session_state["qsar_last_artifact"], meta, db,
+            )
+            st.success(f"Saved as model #{model_id}: {meta['name']}")
+        except Exception as e:
+            st.error(f"Failed to save model: {e}")
