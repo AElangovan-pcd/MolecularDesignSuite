@@ -171,8 +171,24 @@ def save_model_artifact(
     model_id = db.add_qsar_model(full_meta)
     artifact_path = models_dir / f"{model_id}.joblib"
 
+    # Serialize as a plain dict, not the ModelArtifact dataclass itself.
+    # Streamlit's hot-reload re-imports utils.qsar, defining a new class
+    # object that joblib can no longer match against the old instance
+    # ("not the same object as utils.qsar.ModelArtifact"). A dict has no
+    # class identity, so it round-trips through joblib reliably even
+    # across module reloads.
+    payload = {
+        "model": artifact.model,
+        "scaler": artifact.scaler,
+        "feature_columns": artifact.feature_columns,
+        "training_smiles_hashes": artifact.training_smiles_hashes,
+        "training_y_min": artifact.training_y_min,
+        "training_y_max": artifact.training_y_max,
+        "rdkit_version": artifact.rdkit_version,
+        "sklearn_version": artifact.sklearn_version,
+    }
     try:
-        joblib.dump(artifact, artifact_path)
+        joblib.dump(payload, artifact_path)
     except Exception:
         # Roll back the DB row; delete_qsar_model is tolerant of missing files.
         db.delete_qsar_model(model_id)
@@ -213,7 +229,11 @@ def load_model_artifact(
         raise FileNotFoundError(
             f"QSAR model artifact missing on disk: {artifact_path}"
         )
-    return joblib.load(artifact_path)
+    payload = joblib.load(artifact_path)
+    if isinstance(payload, ModelArtifact):
+        # Legacy: artifact was persisted as the dataclass instance directly.
+        return payload
+    return ModelArtifact(**payload)
 
 
 def predict(artifact: ModelArtifact, smiles_list: list[str]) -> list[dict]:
