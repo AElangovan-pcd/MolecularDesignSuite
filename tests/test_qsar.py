@@ -7,6 +7,7 @@ import pytest
 from utils.qsar import (
     ModelArtifact, train_qsar,
 )
+from utils.qsar import save_model_artifact, load_model_artifact
 
 
 def test_train_qsar_returns_artifact_and_metrics(sample_dataset_df):
@@ -100,3 +101,95 @@ def test_train_qsar_log10_raises_on_nonpositive():
     })
     with pytest.raises(ValueError, match="log10 transform requires positive"):
         train_qsar(df, "SMILES", "Activity", activity_transform="log10")
+
+
+def test_save_load_round_trip(tmp_db, tmp_path, sample_dataset_df):
+    from utils.rdkit_utils import mol_from_smiles, calculate_descriptor_set
+
+    artifact, metrics = train_qsar(sample_dataset_df, "SMILES", "Activity")
+    models_dir = tmp_path / "qsar_models"
+    meta = {
+        "name": "RoundTrip", "dataset_name": "sample.csv",
+        "activity_label": "pIC50", "activity_transform": "none",
+        "higher_is_better": 1,
+        "cv_r2_mean": metrics["cv_r2_mean"], "cv_r2_std": metrics["cv_r2_std"],
+        "project_id": None,
+    }
+    model_id = save_model_artifact(artifact, meta, tmp_db, models_dir=models_dir)
+    assert model_id > 0
+    assert (models_dir / f"{model_id}.joblib").exists()
+
+    loaded = load_model_artifact(model_id, tmp_db, models_dir=models_dir)
+    assert loaded.feature_columns == artifact.feature_columns
+    assert loaded.training_smiles_hashes == artifact.training_smiles_hashes
+    assert loaded.training_y_min == artifact.training_y_min
+    assert loaded.training_y_max == artifact.training_y_max
+
+    # Predictions must match exactly across the round-trip.
+    desc = calculate_descriptor_set(mol_from_smiles("CCO"))
+    X = artifact.scaler.transform(
+        pd.DataFrame([desc])[artifact.feature_columns].values
+    )
+    orig_pred = artifact.model.predict(X)
+    loaded_pred = loaded.model.predict(X)
+    assert (orig_pred == loaded_pred).all()
+
+
+def test_save_persists_metadata_to_db(tmp_db, tmp_path, sample_dataset_df):
+    artifact, metrics = train_qsar(sample_dataset_df, "SMILES", "Activity")
+    meta = {
+        "name": "MetaTest", "dataset_name": "x.csv",
+        "activity_label": "pIC50", "activity_transform": "none",
+        "higher_is_better": 1,
+        "cv_r2_mean": metrics["cv_r2_mean"], "cv_r2_std": metrics["cv_r2_std"],
+        "project_id": None,
+    }
+    model_id = save_model_artifact(artifact, meta, tmp_db, models_dir=tmp_path)
+    rows = tmp_db.get_qsar_models()
+    assert len(rows) == 1
+    row = rows[0]
+    assert row["id"] == model_id
+    assert row["name"] == "MetaTest"
+    assert row["n_molecules"] == len(sample_dataset_df)
+    assert row["model_type"] == "RandomForestRegressor"
+    assert row["rdkit_version"] == artifact.rdkit_version
+    assert row["sklearn_version"] == artifact.sklearn_version
+    assert row["artifact_path"].endswith(f"{model_id}.joblib")
+
+
+def test_save_rolls_back_db_row_on_dump_failure(tmp_db, tmp_path, sample_dataset_df, monkeypatch):
+    artifact, metrics = train_qsar(sample_dataset_df, "SMILES", "Activity")
+    meta = {
+        "name": "RollbackTest", "dataset_name": "x.csv",
+        "activity_label": "pIC50", "activity_transform": "none",
+        "higher_is_better": 1,
+        "cv_r2_mean": 0.0, "cv_r2_std": 0.0,
+        "project_id": None,
+    }
+
+    def boom(*args, **kwargs):
+        raise IOError("simulated disk failure")
+
+    monkeypatch.setattr("utils.qsar.joblib.dump", boom)
+
+    with pytest.raises(IOError, match="simulated disk failure"):
+        save_model_artifact(artifact, meta, tmp_db, models_dir=tmp_path)
+
+    # DB row must not exist after rollback
+    assert tmp_db.get_qsar_models() == []
+
+
+def test_load_missing_artifact_file_raises(tmp_db, tmp_path, sample_dataset_df):
+    artifact, metrics = train_qsar(sample_dataset_df, "SMILES", "Activity")
+    meta = {
+        "name": "WillVanish", "dataset_name": "x.csv",
+        "activity_label": "pIC50", "activity_transform": "none",
+        "higher_is_better": 1, "cv_r2_mean": 0.0, "cv_r2_std": 0.0,
+        "project_id": None,
+    }
+    model_id = save_model_artifact(artifact, meta, tmp_db, models_dir=tmp_path)
+    # User deletes the .joblib out from under us
+    (tmp_path / f"{model_id}.joblib").unlink()
+
+    with pytest.raises(FileNotFoundError):
+        load_model_artifact(model_id, tmp_db, models_dir=tmp_path)

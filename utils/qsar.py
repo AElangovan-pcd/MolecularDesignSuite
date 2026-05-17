@@ -137,3 +137,80 @@ def train_qsar(
         "cv_y_predicted": cv_predictions,
     }
     return artifact, metrics
+
+
+def save_model_artifact(
+    artifact: ModelArtifact,
+    meta: dict,
+    db,
+    models_dir: Path = Path("data/qsar_models"),
+) -> int:
+    """Persist a ModelArtifact to disk and insert its metadata row.
+
+    `meta` is the user/UI-supplied subset:
+        name, dataset_name, activity_label, activity_transform,
+        higher_is_better, cv_r2_mean, cv_r2_std, project_id.
+    The artifact-derived fields (n_molecules, model_type, versions,
+    artifact_path) are filled in here.
+
+    Rolls back the DB row if joblib.dump fails, so callers don't get
+    orphan rows pointing at nonexistent files.
+    """
+    models_dir = Path(models_dir)
+    models_dir.mkdir(parents=True, exist_ok=True)
+
+    # Insert DB row first (we need the id to name the file).
+    full_meta = {
+        **meta,
+        "n_molecules": len(artifact.training_smiles_hashes),
+        "model_type": type(artifact.model).__name__,
+        "rdkit_version": artifact.rdkit_version,
+        "sklearn_version": artifact.sklearn_version,
+        "artifact_path": "",  # placeholder, updated after dump succeeds
+    }
+    model_id = db.add_qsar_model(full_meta)
+    artifact_path = models_dir / f"{model_id}.joblib"
+
+    try:
+        joblib.dump(artifact, artifact_path)
+    except Exception:
+        # Roll back the DB row; delete_qsar_model is tolerant of missing files.
+        db.delete_qsar_model(model_id)
+        raise
+
+    # Patch the artifact_path on the row to the real location.
+    conn = db._get_connection()
+    try:
+        conn.execute(
+            "UPDATE qsar_models SET artifact_path = ? WHERE id = ?",
+            (str(artifact_path), model_id),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    return model_id
+
+
+def load_model_artifact(
+    model_id: int,
+    db,
+    models_dir: Path = Path("data/qsar_models"),
+) -> ModelArtifact:
+    """Load a saved ModelArtifact from disk by DB id.
+
+    Raises FileNotFoundError if the .joblib is gone (e.g. user deleted it
+    or the data/ directory was not copied alongside the DB).
+    """
+    models_dir = Path(models_dir)
+    artifact_path = models_dir / f"{model_id}.joblib"
+    if not artifact_path.exists():
+        # Fall back to the recorded path on the row, in case models_dir differs.
+        rows = [r for r in db.get_qsar_models() if r["id"] == model_id]
+        if rows and rows[0]["artifact_path"]:
+            artifact_path = Path(rows[0]["artifact_path"])
+    if not artifact_path.exists():
+        raise FileNotFoundError(
+            f"QSAR model artifact missing on disk: {artifact_path}"
+        )
+    return joblib.load(artifact_path)
