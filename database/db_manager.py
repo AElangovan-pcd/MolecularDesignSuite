@@ -5,7 +5,6 @@ import os
 from pathlib import Path
 from datetime import datetime
 from typing import Optional
-from pathlib import Path as _Path
 
 
 DB_DIR = Path(__file__).parent
@@ -380,4 +379,4 @@ class DatabaseManager:
         finally:
             conn.close()
         if row is not None and row["artifact_path"]:
-            _Path(row["artifact_path"]).unlink(missing_ok=True)
+            Path(row["artifact_path"]).unlink(missing_ok=True)
