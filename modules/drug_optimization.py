@@ -19,6 +19,7 @@ from utils.visualization import (
     scatter_plot, property_radar_chart,
 )
 from database.db_manager import DatabaseManager
+from utils.qsar import load_model_artifact, predict as qsar_predict
 from utils.editor_helpers import edit_in_editor_button
 
 
@@ -320,7 +321,7 @@ def _scaffold_hopping_tab(db: DatabaseManager):
 
 
 def _mpo_tab(db: DatabaseManager):
-    """Multi-parameter optimization."""
+    """Multi-parameter optimization with optional QSAR-predicted activity axis."""
     st.subheader("Multi-Parameter Optimization (MPO)")
     st.caption("Score molecules against multiple property targets using desirability functions.")
 
@@ -363,13 +364,50 @@ def _mpo_tab(db: DatabaseManager):
         hba_max = st.slider("Max HBA", 0, 15, 10, key="mpo_hba")
         qed_min = st.slider("Min QED", 0.0, 1.0, 0.4, key="mpo_qed")
 
-    if not st.button("Calculate MPO Scores"):
+    # ── Optional QSAR axis ────────────────────────────────────
+    st.markdown("#### QSAR Predicted Activity (optional)")
+    project_id = st.session_state.get("current_project_id")
+    saved_models = db.get_qsar_models(project_id=project_id)
+    qsar_options = {"None": None}
+    for m in saved_models:
+        r2 = m.get("cv_r2_mean")
+        label = f"#{m['id']} {m['name']} (R²={r2:.2f})" if r2 is not None else f"#{m['id']} {m['name']}"
+        qsar_options[label] = m
+    qsar_choice_label = st.selectbox(
+        "Use QSAR model", list(qsar_options.keys()), key="mpo_qsar_model_select"
+    )
+    qsar_meta = qsar_options[qsar_choice_label]
+    qsar_weight = 0.0
+    if qsar_meta is not None:
+        qsar_weight = st.slider(
+            "QSAR axis weight (relative to other axes)",
+            0.0, 1.0, 0.5, 0.1, key="mpo_qsar_weight",
+        )
+
+    if not st.button("Calculate MPO Scores", key="mpo_calc_btn"):
         return
+
+    # If a QSAR model is selected, predict once for the whole batch.
+    qsar_predictions: dict[str, Optional[float]] = {}
+    if qsar_meta is not None:
+        try:
+            artifact = load_model_artifact(qsar_meta["id"], db)
+        except FileNotFoundError:
+            st.error(
+                "QSAR model artifact missing on disk. Delete it from Data Management or pick another."
+            )
+            return
+        results = qsar_predict(artifact, [md["smiles"] for md in molecules])
+        for r in results:
+            qsar_predictions[r["smiles"]] = r["predicted_value"]
+        y_min = artifact.training_y_min
+        y_max = artifact.training_y_max
+        y_span = (y_max - y_min) if y_max > y_min else 1.0
+        higher_is_better = bool(qsar_meta["higher_is_better"])
 
     rows = []
     for md in molecules:
         props = calculate_basic_properties(md["mol"])
-        # Desirability scoring (0-1 for each property)
         scores = {}
         mw = props["molecular_weight"]
         scores["MW"] = 1.0 if mw_range[0] <= mw <= mw_range[1] else max(0, 1 - abs(mw - np.mean(mw_range)) / 200)
@@ -381,10 +419,29 @@ def _mpo_tab(db: DatabaseManager):
         scores["HBA"] = 1.0 if props["hba"] <= hba_max else max(0, 1 - (props["hba"] - hba_max) / 5)
         scores["QED"] = 1.0 if props["qed"] >= qed_min else props["qed"] / qed_min
 
-        mpo_score = np.mean(list(scores.values()))
+        # Equal-weighted mean of the property axes (existing behavior)
+        property_score = float(np.mean(list(scores.values())))
 
-        row = {"Name": md["name"], "SMILES": md["smiles"],
-               "MPO Score": round(mpo_score, 3)}
+        row = {"Name": md["name"], "SMILES": md["smiles"]}
+
+        if qsar_meta is not None:
+            pred = qsar_predictions.get(md["smiles"])
+            if pred is None:
+                # Invalid SMILES for the QSAR model — score this axis as 0
+                qsar_desirability = 0.0
+                row[f"Predicted {qsar_meta['activity_label']}"] = None
+            else:
+                norm = (pred - y_min) / y_span
+                norm = max(0.0, min(1.0, norm))
+                qsar_desirability = norm if higher_is_better else (1.0 - norm)
+                row[f"Predicted {qsar_meta['activity_label']}"] = round(pred, 3)
+            row["QSAR Score"] = round(qsar_desirability, 3)
+            # Weighted combination: w * qsar + (1 - w) * property_score
+            mpo_score = qsar_weight * qsar_desirability + (1.0 - qsar_weight) * property_score
+        else:
+            mpo_score = property_score
+
+        row["MPO Score"] = round(mpo_score, 3)
         row.update({f"{k} Score": round(v, 3) for k, v in scores.items()})
         row.update({"MW": mw, "LogP": logp, "TPSA": tpsa,
                     "HBD": props["hbd"], "HBA": props["hba"],
@@ -394,7 +451,6 @@ def _mpo_tab(db: DatabaseManager):
     df = pd.DataFrame(rows).sort_values("MPO Score", ascending=False)
     st.dataframe(df, use_container_width=True)
 
-    # MPO vs QED scatter
     st.plotly_chart(
         scatter_plot(df, "QED", "MPO Score", hover_data=["Name", "SMILES"],
                      title="MPO Score vs QED"),
